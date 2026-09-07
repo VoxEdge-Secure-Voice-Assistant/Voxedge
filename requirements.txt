@@ -1,0 +1,8 @@
+vosk
+sounddevice
+numpy
+resemblyzer
+soundfile
+webrtcvad-wheels
+librosa
+torch
