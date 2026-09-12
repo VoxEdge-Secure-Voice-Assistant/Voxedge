@@ -9,9 +9,20 @@ Usage:
 """
 
 from pathlib import Path  # for cross-platform folder/file paths
+import sys
 
 import sounddevice as sd   # to record audio from the microphone
 import soundfile as sf     # to save the audio as a .wav file
+
+
+def configure_console() -> None:
+    """Use UTF-8 where supported so Windows consoles can print status symbols."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+configure_console()
 
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -66,4 +77,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()

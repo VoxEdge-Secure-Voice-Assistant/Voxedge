@@ -27,6 +27,7 @@ Usage:
 """
 
 import json       # Vosk returns JSON strings; we parse them here
+import sys
 import threading  # run the input loop in a background thread while Tkinter runs
 from pathlib import Path
 
@@ -37,6 +38,16 @@ from resemblyzer import VoiceEncoder, preprocess_wav  # speaker embedding
 from vosk import KaldiRecognizer, Model               # offline speech recognition
 
 from fan_simulator import FanSimulator
+
+
+def configure_console() -> None:
+    """Use UTF-8 where supported so Windows consoles can print status symbols."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+configure_console()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -271,4 +282,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    main()

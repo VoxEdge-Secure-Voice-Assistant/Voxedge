@@ -1,8 +1,0 @@
-.venv/
-.venv311/
-__pycache__/
-*.pyc
-command.wav
-enrolled_voice.npy
-enrollment/*.wav
-model/

@@ -6,3 +6,6 @@ soundfile
 webrtcvad-wheels
 librosa
 torch
+# Resemblyzer's WebRTC VAD dependency still imports pkg_resources, removed
+# from newer Setuptools releases.
+setuptools<81
