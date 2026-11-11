@@ -83,7 +83,7 @@ export default function EmergencyPage() {
                 {active.trigger_text}
               </p>
               <p className="text-xs text-text-muted mb-4">
-                Severity: {active.severity} · Triggered:{' '}
+                Category: <span className="font-semibold text-danger">{active.category || 'GENERAL'}</span> · Severity: {active.severity} · Triggered:{' '}
                 {new Date(active.created_at).toLocaleString()}
               </p>
 

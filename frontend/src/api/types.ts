@@ -1,5 +1,35 @@
 /* ── API types matching the Pydantic schemas ─────────────────────────────── */
 
+/* ── Auth types ────────────────────────────────────────────────────────────── */
+
+export interface UserProfile {
+  id: number;
+  username: string;
+  full_name: string | null;
+  email: string | null;
+  voice_enrolled: boolean;
+  voice_profile_path: string | null;
+  created_at: string;
+}
+
+export interface AuthTokenResponse {
+  access_token: string;
+  token_type: string;
+  user: UserProfile;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface RegisterRequest {
+  username: string;
+  password: string;
+  full_name?: string;
+  email?: string;
+}
+
 export interface Device {
   id: string;
   name: string;
@@ -130,6 +160,7 @@ export interface EmergencyEvent {
   trigger_text: string;
   status: string;
   severity: string;
+  category?: string | null;
   contacts: EmergencyContact[];
   notes: string | null;
   created_at: string;

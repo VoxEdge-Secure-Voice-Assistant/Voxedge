@@ -289,9 +289,10 @@ def test_case_3_indirect_its_too_dark(db_session, client, enrolled_auth):
 def test_case_4_indirect_im_feeling_hot(db_session, client, enrolled_auth):
     """
     CASE 4: "I'm feeling hot."
-    Expected: Indirect request, suggests Fan ON, interprets cautiously,
-              decision CLARIFY asking to turn on the fan.
-              NO device state changes!
+    Expected: Indirect request, suggests Fan ON. With context-aware interpretation,
+              when the fan is OFF, the engine directly proposes EXECUTE (fan ON)
+              instead of asking a redundant clarification.
+              Device state changes to ON after context-aware execution.
     """
     intent_service = IntentService()
     res = intent_service.extract("I'm feeling hot.")
@@ -311,15 +312,19 @@ def test_case_4_indirect_im_feeling_hot(db_session, client, enrolled_auth):
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["decision"] == "CLARIFY"
-    assert data["target_device"] == "fan"
-    assert data["requested_action"] == "ON"
-    assert data["requires_clarification"] is True
-    assert "fan" in data["clarification_question"].lower()
-    assert data["execution_status"] is None
 
-    # Verify NO device state changed
-    assert db_session.query(Device).filter_by(id="fan").first().state == fan_state_before
+    # Context-aware engine: fan is OFF, so it directly EXECUTEs fan ON
+    if fan_state_before == "OFF":
+        assert data["decision"] == "EXECUTE"
+        assert data["target_device"] == "fan"
+        assert data["requested_action"] == "ON"
+        assert data["execution_status"] == "SUCCESS"
+        db_session.expire_all()
+        assert db_session.query(Device).filter_by(id="fan").first().state == "ON"
+    else:
+        # Fan is already ON → no_action_needed → REJECT
+        assert data["decision"] == "REJECT"
+        assert db_session.query(Device).filter_by(id="fan").first().state == fan_state_before
 
 
 def test_case_5_pronoun_reference_turn_it_off(db_session, client, enrolled_auth):

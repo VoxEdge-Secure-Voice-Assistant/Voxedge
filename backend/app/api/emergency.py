@@ -16,10 +16,12 @@ from sqlalchemy.orm import Session
 
 from app.database.session import get_db
 from app.schemas.emergency import (
+    EmergencyDetectionResponse,
     EmergencyEventResponse,
     EmergencyTriggerRequest,
     EmergencyUpdateRequest,
 )
+from app.services.emergency_detector import EmergencyDetector
 from app.services.emergency_service import EmergencyService
 
 router = APIRouter(prefix="/emergency", tags=["emergency"])
@@ -32,12 +34,25 @@ def _event_to_response(event, service: EmergencyService) -> EmergencyEventRespon
         trigger_text=event.trigger_text,
         status=event.status,
         severity=event.severity,
+        category=getattr(event, "category", None),
         contacts=service.parse_contacts(event),
         notes=event.notes,
         created_at=event.created_at,
         updated_at=event.updated_at,
         resolved_at=event.resolved_at,
     )
+
+
+@router.post("/detect", response_model=EmergencyDetectionResponse)
+def detect_emergency(body: dict):
+    """
+    Directly evaluate text for emergency indicators.
+    Returns structured detection classification, category, and recommendation.
+    """
+    text = body.get("text", "")
+    detector = EmergencyDetector()
+    result = detector.detect(text)
+    return result.to_response()
 
 
 @router.post("/trigger", response_model=EmergencyEventResponse)

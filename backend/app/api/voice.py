@@ -18,9 +18,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
+from pathlib import Path
+
+from app.api.auth import get_optional_user
 from app.core.config import settings
 from app.database.session import get_db
 from app.models.interaction import Interaction
+from app.models.user import User
 from app.schemas.conversation import ContextSummaryResponse, ConversationHistoryResponse
 from app.schemas.voice import (
     EnrollmentStatusResponse,
@@ -35,11 +39,14 @@ from app.services.decision_engine import EXECUTE as DEC_EXECUTE
 from app.services.decision_engine import ESCALATE as DEC_ESCALATE
 from app.services.device_service import DeviceService
 from app.services.emergency_service import EmergencyService
+from app.services.emergency_detector import EmergencyDetector
+from app.schemas.emergency import EmergencyDetectionResponse
 from app.services.intent_service import (
     CONTROL_DEVICE,
     STATUS_CHECK,
     IntentService,
 )
+from app.services.user_service import UserService
 from app.services.voice_auth_service import VoiceAuthService
 
 logger = logging.getLogger(__name__)
@@ -50,14 +57,19 @@ router = APIRouter(prefix="/voice", tags=["voice"])
 _intent_service = IntentService()
 _context_service = ContextService()
 _voice_auth_service = VoiceAuthService()
+_emergency_detector = EmergencyDetector()
 
 
 # ── 1. Voice Enrollment Endpoints ───────────────────────────────────────────
 
 @router.get("/enrollment-status", response_model=EnrollmentStatusResponse)
-def get_enrollment_status():
-    """Check whether a speaker voice profile is currently enrolled."""
-    is_enrolled = _voice_auth_service.is_enrolled()
+def get_enrollment_status(current_user: User | None = Depends(get_optional_user)):
+    """Check whether a speaker voice profile is currently enrolled for the user."""
+    if current_user and current_user.username != "user":
+        is_enrolled = UserService.is_voice_enrolled(current_user)
+    else:
+        is_enrolled = _voice_auth_service.is_enrolled()
+
     threshold = settings.similarity_threshold
     message = (
         "Enrolled voice profile found."
@@ -75,15 +87,12 @@ def get_enrollment_status():
 async def enroll_voice(
     file: UploadFile = File(..., description="Audio recording (WAV format preferred)"),
     force: bool = Form(False, description="Explicit flag required to overwrite an existing profile"),
+    current_user: User | None = Depends(get_optional_user),
+    db: Session = Depends(get_db),
 ):
     """
     Enroll a voice sample to create or replace the speaker profile.
-
-    Security requirements:
-      - Enrollment is a separate operation from command execution.
-      - Never automatically overwrites an existing profile.
-      - Requires explicit authorization (force=True) to replace an existing profile.
-      - Confirms enrollment only after successful creation and disk save.
+    Saves profile to user-specific storage for multi-user isolation.
     """
     audio_bytes = await file.read()
     if not audio_bytes or len(audio_bytes) == 0:
@@ -92,9 +101,20 @@ async def enroll_voice(
             detail="Audio sample is empty. Please record a voice sample before enrolling.",
         )
 
-    success, message, extra = _voice_auth_service.enroll_voice(
-        audio_bytes=audio_bytes, force=force
-    )
+    orig_profile = settings.enrolled_voice_path
+    user_profile_path = None
+    if current_user and current_user.username != "user":
+        profile_dir = Path("data/voice_profiles")
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        user_profile_path = profile_dir / f"user_{current_user.id}_voice.npy"
+        settings.enrolled_voice_path = str(user_profile_path)
+
+    try:
+        success, message, extra = _voice_auth_service.enroll_voice(
+            audio_bytes=audio_bytes, force=force
+        )
+    finally:
+        settings.enrolled_voice_path = orig_profile
 
     if not success:
         error_code = extra.get("error_code")
@@ -108,19 +128,41 @@ async def enroll_voice(
             detail=message,
         )
 
+    if current_user and user_profile_path:
+        current_user.voice_profile_path = str(user_profile_path)
+        db.commit()
+
+    session_id = str(uuid.uuid4())
+    auth_token = _voice_auth_service.create_session_token(session_id, 1.0)
+
     return VoiceEnrollResponse(
         success=True,
         is_enrolled=True,
         message=message,
         dimensions=extra.get("dimensions", 256),
         similarity_threshold=settings.similarity_threshold,
+        auth_token=auth_token,
     )
 
 
 @router.delete("/profile")
-def delete_voice_profile():
+def delete_voice_profile(
+    current_user: User | None = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
     """Delete existing voice profile to allow clean enrollment from scratch."""
-    success = _voice_auth_service.delete_profile()
+    orig_profile = settings.enrolled_voice_path
+    if current_user and current_user.username != "user" and current_user.voice_profile_path:
+        settings.enrolled_voice_path = current_user.voice_profile_path
+
+    try:
+        success = _voice_auth_service.delete_profile()
+        if success and current_user and current_user.username != "user":
+            current_user.voice_profile_path = None
+            db.commit()
+    finally:
+        settings.enrolled_voice_path = orig_profile
+
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete profile.")
     return {"success": True, "message": "Voice profile removed. You can now enroll your voice from scratch."}
@@ -132,29 +174,72 @@ def delete_voice_profile():
 async def process_audio_command(
     file: UploadFile = File(..., description="Command audio recording"),
     session_id: str | None = Form(None),
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """
-    Automatic speaker verification & command processing pipeline.
-
-    Workflow:
-      1. Check whether an enrolled voice profile exists. If not, reject immediately.
-      2. Extract voice embedding from the audio using the speaker-verification model.
-      3. Compare with enrolled embedding and calculate similarity score.
-      4. Compare score against configured threshold.
-      5. If score meets threshold: mark authenticated and proceed to speech recognition
-         and intent processing.
-      6. If score is below threshold or verification fails: reject command and execute
-         no device action.
+    Automatic speaker verification & command processing pipeline with user isolation.
     """
     sid = session_id or str(uuid.uuid4())
     audio_bytes = await file.read()
+    user_id = current_user.id if current_user else None
+    user_sid = f"u{user_id}_{sid}" if user_id else sid
 
-    # ── Step 1: Check enrollment ────────────────────────────────────────────
-    if not _voice_auth_service.is_enrolled():
+    # ── Step 1: Check enrollment for current user ───────────────────────────
+    if current_user and current_user.username != "user":
+        user_is_enrolled = UserService.is_voice_enrolled(current_user)
+    else:
+        user_is_enrolled = _voice_auth_service.is_enrolled()
+
+    if not user_is_enrolled:
+        # Separate emergency pathway: check if speech contains emergency request
+        transcribed_text = _voice_auth_service.transcribe_audio(audio_bytes)
+        em_res = _emergency_detector.detect(transcribed_text)
+        if em_res.is_emergency:
+            emergency_service = EmergencyService(db)
+            emergency_service.trigger(
+                trigger_text=transcribed_text,
+                severity=em_res.severity,
+                category=em_res.category,
+            )
+            reason = f"Emergency detected: {em_res.detection_reason} (No voice profile enrolled)"
+            msg = em_res.recommended_response or "Emergency assistance triggered."
+            interaction = Interaction(
+                session_id=sid,
+                user_id=user_id,
+                raw_text=transcribed_text,
+                recognized_text=transcribed_text,
+                input_mode="voice",
+                speaker_verified=False,
+                speaker_similarity=0.0,
+                intent="EMERGENCY",
+                decision_outcome="ESCALATE",
+                decision_reason=reason,
+                execution_status="SUCCESS",
+            )
+            db.add(interaction)
+            db.commit()
+            db.refresh(interaction)
+
+            return VoiceProcessResponse(
+                interaction_id=interaction.id,
+                session_id=sid,
+                recognized_text=transcribed_text,
+                intent="EMERGENCY",
+                decision="ESCALATE",
+                decision_reason=reason,
+                speaker_verified=False,
+                speaker_similarity=0.0,
+                similarity_threshold=settings.similarity_threshold,
+                execution_status="SUCCESS",
+                message=msg,
+                emergency_detection=em_res.to_response(),
+            )
+
         reason = "Voice profile not enrolled. Please enroll your voice first."
         interaction = Interaction(
             session_id=sid,
+            user_id=user_id,
             raw_text="[Audio unauthenticated]",
             recognized_text="[Voice profile not enrolled]",
             input_mode="voice",
@@ -182,11 +267,61 @@ async def process_audio_command(
             message=reason,
         )
 
-    # ── Step 2 & 3: Speaker verification & similarity calculation ───────────
-    verified, similarity, verify_msg, failure_reason = _voice_auth_service.verify_speaker(audio_bytes)
+    # ── Step 2 & 3: Speaker verification with user profile isolation ─────────
+    orig_profile = settings.enrolled_voice_path
+    try:
+        if current_user and current_user.username != "user" and current_user.voice_profile_path:
+            settings.enrolled_voice_path = current_user.voice_profile_path
+        verified, similarity, verify_msg, failure_reason = _voice_auth_service.verify_speaker(audio_bytes)
+    finally:
+        settings.enrolled_voice_path = orig_profile
 
     # ── Step 4: Verification failed or score below threshold ────────────────
     if not verified:
+        # Separate emergency pathway: check if speech contains emergency request
+        transcribed_text = _voice_auth_service.transcribe_audio(audio_bytes)
+        em_res = _emergency_detector.detect(transcribed_text)
+        if em_res.is_emergency:
+            emergency_service = EmergencyService(db)
+            emergency_service.trigger(
+                trigger_text=transcribed_text,
+                severity=em_res.severity,
+                category=em_res.category,
+            )
+            reason = f"Emergency detected: {em_res.detection_reason} (Speaker verification failed, score={similarity:.4f})"
+            msg = em_res.recommended_response or "Emergency assistance triggered."
+            interaction = Interaction(
+                session_id=sid,
+                user_id=user_id,
+                raw_text=transcribed_text,
+                recognized_text=transcribed_text,
+                input_mode="voice",
+                speaker_verified=False,
+                speaker_similarity=round(similarity, 4),
+                intent="EMERGENCY",
+                decision_outcome="ESCALATE",
+                decision_reason=reason,
+                execution_status="SUCCESS",
+            )
+            db.add(interaction)
+            db.commit()
+            db.refresh(interaction)
+
+            return VoiceProcessResponse(
+                interaction_id=interaction.id,
+                session_id=sid,
+                recognized_text=transcribed_text,
+                intent="EMERGENCY",
+                decision="ESCALATE",
+                decision_reason=reason,
+                speaker_verified=False,
+                speaker_similarity=round(similarity, 4),
+                similarity_threshold=settings.similarity_threshold,
+                execution_status="SUCCESS",
+                message=msg,
+                emergency_detection=em_res.to_response(),
+            )
+
         logger.warning(
             "Speaker verification failed for session %s: %s (score=%.4f)",
             sid,
@@ -195,6 +330,7 @@ async def process_audio_command(
         )
         interaction = Interaction(
             session_id=sid,
+            user_id=user_id,
             raw_text="[Audio voice verification failed]",
             recognized_text="[Voice not recognized]",
             input_mode="voice",
@@ -229,6 +365,7 @@ async def process_audio_command(
     if not transcribed_text:
         interaction = Interaction(
             session_id=sid,
+            user_id=user_id,
             raw_text="[Audio with no speech]",
             recognized_text="",
             input_mode="voice",
@@ -257,10 +394,10 @@ async def process_audio_command(
             message="Voice verified, but no speech was recognized. Please speak your command clearly.",
         )
 
-    # ── Step 6: Intent Extraction & Decision Engine ─────────────────────────
+    # ── Step 6: Intent Extraction & Decision Engine (User Scoped Context) ────
     intent_result = _intent_service.extract(transcribed_text)
     engine = DecisionEngine(db=db, context=_context_service)
-    decision = engine.decide(intent_result, sid)
+    decision = engine.decide(intent_result, user_sid)
 
     # ── Step 7: Execution (Authenticated path) ──────────────────────────────
     execution_status = None
@@ -285,6 +422,7 @@ async def process_audio_command(
         emergency_service.trigger(
             trigger_text=transcribed_text,
             severity=decision.entities.get("severity", "HIGH"),
+            category=decision.entities.get("category"),
         )
         execution_status = "SUCCESS"
         decision.message = f"Voice verified. Emergency assistance triggered."
@@ -292,6 +430,7 @@ async def process_audio_command(
     # ── Step 8: Record interaction & apply retention policy ──────────────────
     interaction = Interaction(
         session_id=sid,
+        user_id=user_id,
         raw_text=transcribed_text,
         recognized_text=transcribed_text,
         input_mode="voice",
@@ -351,6 +490,7 @@ async def process_audio_command(
         speaker_similarity=round(similarity, 4),
         similarity_threshold=settings.similarity_threshold,
         auth_token=auth_token,
+        emergency_detection=_emergency_detector.detect(transcribed_text).to_response() if decision.outcome == DEC_ESCALATE else None,
     )
 
 
@@ -360,40 +500,42 @@ async def process_audio_command(
 def process_command(
     body: VoiceProcessRequest,
     authorization: Annotated[str | None, Header()] = None,
+    current_user: User | None = Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     """
-    Process command text with backend authentication enforcement.
-
-    Security rules:
-      - All device-control state changes require authentication.
-      - If no voice profile is enrolled, ordinary device commands are rejected.
-      - If an unauthenticated text request attempts to change a device's state,
-        it is rejected unless accompanied by a verified session auth token.
+    Process command text with backend authentication enforcement and user data isolation.
     """
     session_id = body.session_id or str(uuid.uuid4())
     text = body.text.strip()
+    user_id = current_user.id if current_user else None
+    user_sid = f"u{user_id}_{session_id}" if user_id else session_id
 
-    # ── Check enrollment ────────────────────────────────────────────────────
-    is_enrolled = _voice_auth_service.is_enrolled()
+    # ── Check enrollment for current user ───────────────────────────────────
+    if current_user and current_user.username != "user":
+        is_enrolled = UserService.is_voice_enrolled(current_user)
+    else:
+        is_enrolled = _voice_auth_service.is_enrolled()
 
-    # ── Check if caller provided a valid session auth token ──────────────────
+    # ── Check if caller provided a valid session auth token or user token ───
     token = None
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split("Bearer ", 1)[1].strip()
 
     has_valid_auth = False
     if token:
-        valid, token_session_id = _voice_auth_service.verify_session_token(token)
-        if valid and (token_session_id == session_id or not body.session_id):
+        valid_voice, token_session_id = _voice_auth_service.verify_session_token(token)
+        from app.services.user_service import verify_access_token
+        valid_user, token_uid, _ = verify_access_token(token)
+        if (valid_voice and (token_session_id == session_id or not body.session_id)) or valid_user:
             has_valid_auth = True
 
     # ── 1. Intent extraction ────────────────────────────────────────────────
     intent_result = _intent_service.extract(text)
 
-    # ── 2. Decision engine ──────────────────────────────────────────────────
+    # ── 2. Decision engine (user-scoped context) ────────────────────────────
     engine = DecisionEngine(db=db, context=_context_service)
-    decision = engine.decide(intent_result, session_id)
+    decision = engine.decide(intent_result, user_sid)
 
     # ── 3. Security Enforcement on Device Control ───────────────────────────
     execution_status = None
@@ -435,12 +577,14 @@ def process_command(
         emergency_service.trigger(
             trigger_text=text,
             severity=decision.entities.get("severity", "HIGH"),
+            category=decision.entities.get("category"),
         )
         execution_status = "SUCCESS"
 
     # ── 4. Record interaction & apply retention policy ──────────────────────
     interaction = Interaction(
         session_id=session_id,
+        user_id=user_id,
         raw_text=text,
         recognized_text=text,
         input_mode=body.input_mode,
@@ -498,6 +642,7 @@ def process_command(
         message=decision.message,
         speaker_verified=has_valid_auth,
         similarity_threshold=settings.similarity_threshold,
+        emergency_detection=_emergency_detector.detect(text).to_response() if decision.outcome == DEC_ESCALATE else None,
     )
 
 

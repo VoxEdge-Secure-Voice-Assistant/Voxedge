@@ -27,7 +27,9 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.services.context_service import ContextService, PendingClarification
+from app.services.context_interpreter import ContextInterpreter
 from app.services.device_service import DeviceService
+from app.services.emergency_service import EmergencyService
 from app.services.slm_service import SLMService
 from app.services.intent_service import (
     CANCEL,
@@ -206,16 +208,35 @@ class DecisionEngine:
     # ── Intent handlers ───────────────────────────────────────────────────
 
     def _handle_emergency(self, ir: IntentResult) -> Decision:
+        category = ir.entities.get("category", "GENERAL_DISTRESS")
+        rec_resp = ir.entities.get("recommended_response")
+        msg = rec_resp or "Emergency assistance triggered. Notifying contacts."
         return Decision(
             outcome=ESCALATE,
             intent=EMERGENCY,
             confidence=ir.confidence,
-            reason="Emergency keyword detected.",
-            message="Emergency assistance triggered. Notifying contacts.",
+            reason=ir.reason or "Emergency keyword detected.",
+            message=msg,
             entities=ir.entities,
         )
 
     def _handle_cancel(self, ir: IntentResult, session_id: str) -> Decision:
+        # Check if an active emergency exists to cancel
+        emergency_service = EmergencyService(self.db)
+        active_em = emergency_service.get_active()
+        if active_em:
+            emergency_service.update_status(
+                active_em.id, "CANCELLED", notes="Cancelled via user command."
+            )
+            return Decision(
+                outcome=REJECT,
+                intent=CANCEL,
+                confidence=ir.confidence,
+                reason="Active emergency cancelled by user request.",
+                message="Emergency alert has been cancelled.",
+                entities={"emergency_id": active_em.id, "cancelled": True},
+            )
+
         pending = self.context.get_pending(session_id)
         if pending:
             self.context.clear_pending(session_id)
@@ -541,154 +562,175 @@ class DecisionEngine:
             entities=ir.entities,
         )
 
+    def _get_device_states(self) -> dict[str, str]:
+        """Collect current states of all known devices from the database."""
+        devices = self.device_service.list_devices()
+        return {d.id: d.state for d in devices}
+
     def _handle_indirect_statement(self, ir: IntentResult, session_id: str) -> Decision:
         """
-        Handle indirect natural-language statements by inspecting current
-        simulated device capabilities and states, and clarifying rather than guessing.
+        Handle indirect natural-language statements using the ContextInterpreter.
+
+        The ContextInterpreter inspects current device states, conversation
+        context, and linguistic cues to produce a structured ContextProposal.
+        This method translates that proposal into a Decision.
         """
-        text = ir.raw_text.lower()
+        interpreter = ContextInterpreter()
+        device_states = self._get_device_states()
+        known_devices = self.device_service.list_devices()
 
-        # 1. Darkness ("It's too dark", "Can't see", etc.)
-        if "dark" in text or "see" in text or "light" in text:
-            lights = self.device_service.get_device_by_name_or_location(device_type="light")
-            off_lights = [l for l in lights if l.state == "OFF"]
-            if len(off_lights) == 1:
-                target_light = off_lights[0]
-                prompt = f"It sounds like it's too dark. Would you like me to turn on the {target_light.name}?"
-            else:
-                prompt = "It sounds like it's too dark. Which light would you like me to turn on: the Bedroom Light or the Living Room Light?"
-
-            self.context.set_pending(
-                session_id,
-                PendingClarification(
-                    interaction_id=None,
-                    question=prompt,
-                    intent=CONTROL_DEVICE,
-                    action="ON",
-                    needed_slot="device",
-                    candidates=["bedroom_light", "living_room_light"],
-                ),
-            )
-            return Decision(
-                outcome=CLARIFY,
-                intent=CONTROL_DEVICE,
-                requested_action="ON",
-                confidence=ir.confidence,
-                reason="Indirect statement expressing darkness. Checked light capabilities and suggested turning on lights.",
-                clarification_question=prompt,
-                message=prompt,
-                entities=ir.entities,
-            )
-
-        # 2. Brightness ("It's too bright", "Blinding")
-        if "bright" in text or "blinding" in text or "eyes" in text:
-            prompt = "The lights do not support dimming. Would you like me to turn off the Bedroom Light or the Living Room Light?"
-            self.context.set_pending(
-                session_id,
-                PendingClarification(
-                    interaction_id=None,
-                    question=prompt,
-                    intent=CONTROL_DEVICE,
-                    action="OFF",
-                    needed_slot="device",
-                    candidates=["bedroom_light", "living_room_light"],
-                ),
-            )
-            return Decision(
-                outcome=CLARIFY,
-                intent=CONTROL_DEVICE,
-                requested_action="OFF",
-                confidence=ir.confidence,
-                reason="Indirect statement expressing excess brightness. Dimming is unsupported; clarifying whether to turn off lights.",
-                clarification_question=prompt,
-                message=prompt,
-                entities=ir.entities,
-            )
-
-        # 3. Heat ("I'm feeling hot", "It's too hot", "Stuffy")
-        if "hot" in text or "warm" in text or "stuffy" in text or "sweating" in text:
-            fan = self.device_service.get_device("fan")
-            if fan and fan.state == "ON":
-                prompt = "The fan is already ON. Would you like me to do something else?"
-            else:
-                prompt = "You mentioned you're feeling hot. Would you like me to turn on the fan?"
-
-            self.context.set_pending(
-                session_id,
-                PendingClarification(
-                    interaction_id=None,
-                    question=prompt,
-                    intent=CONTROL_DEVICE,
-                    device_id="fan",
-                    action="ON",
-                    needed_slot="action",
-                    candidates=["fan"],
-                ),
-            )
-            return Decision(
-                outcome=CLARIFY,
-                intent=CONTROL_DEVICE,
-                target_device="fan",
-                requested_action="ON",
-                confidence=ir.confidence,
-                reason="Indirect statement expressing heat. Interpreted cautiously to clarify whether to turn on the fan.",
-                clarification_question=prompt,
-                message=prompt,
-                entities=ir.entities,
-            )
-
-        # 4. Cold ("It's too cold", "I'm feeling cold", "Chilly")
-        if "cold" in text or "chilly" in text or "freezing" in text:
-            fan = self.device_service.get_device("fan")
-            if fan and fan.state == "OFF":
-                prompt = "The fan is already OFF. Would you like me to do something else?"
-            else:
-                prompt = "You mentioned you're feeling cold. Would you like me to turn off the fan?"
-
-            self.context.set_pending(
-                session_id,
-                PendingClarification(
-                    interaction_id=None,
-                    question=prompt,
-                    intent=CONTROL_DEVICE,
-                    device_id="fan",
-                    action="OFF",
-                    needed_slot="action",
-                    candidates=["fan"],
-                ),
-            )
-            return Decision(
-                outcome=CLARIFY,
-                intent=CONTROL_DEVICE,
-                target_device="fan",
-                requested_action="OFF",
-                confidence=ir.confidence,
-                reason="Indirect statement expressing cold. Clarifying whether to turn off the fan.",
-                clarification_question=prompt,
-                message=prompt,
-                entities=ir.entities,
-            )
-
-        # 5. General Comfort / Settings ("Make it comfortable", "Change the settings")
-        prompt = "Would you like me to adjust the fan or the lights?"
-        self.context.set_pending(
-            session_id,
-            PendingClarification(
-                interaction_id=None,
-                question=prompt,
-                intent=CONTROL_DEVICE,
-                needed_slot="device",
-                candidates=["fan", "bedroom_light", "living_room_light"],
-            ),
+        proposal = interpreter.interpret(
+            text=ir.raw_text,
+            context=self.context,
+            session_id=session_id,
+            device_states=device_states,
+            known_devices=known_devices,
         )
+
+        # If the interpreter has no opinion, fall back to generic clarification
+        if proposal is None:
+            prompt = "Would you like me to adjust the fan or the lights?"
+            self.context.set_pending(
+                session_id,
+                PendingClarification(
+                    interaction_id=None,
+                    question=prompt,
+                    intent=CONTROL_DEVICE,
+                    needed_slot="device",
+                    candidates=["fan", "bedroom_light", "living_room_light"],
+                ),
+            )
+            return Decision(
+                outcome=CLARIFY,
+                intent=CONTROL_DEVICE,
+                confidence=ir.confidence,
+                reason="General comfort or settings request. Clarification required to identify target device.",
+                clarification_question=prompt,
+                message=prompt,
+                entities=ir.entities,
+            )
+
+        # ── Proposal: no_action_needed (device already in desired state) ──
+        if proposal.no_action_needed:
+            return Decision(
+                outcome=REJECT,
+                intent=CONTROL_DEVICE,
+                target_device=proposal.device,
+                requested_action=proposal.action,
+                confidence=proposal.confidence,
+                reason=proposal.reason,
+                message=proposal.reason,
+                entities={**ir.entities, "context_proposal": proposal.to_dict()},
+            )
+
+        # ── Proposal: unknown device ─────────────────────────────────────
+        if proposal.is_unknown_device:
+            all_devices = self.device_service.list_devices()
+            known_names = ", ".join(d.name for d in all_devices)
+            return Decision(
+                outcome=REJECT,
+                intent=CONTROL_DEVICE,
+                target_device=proposal.device,
+                requested_action=proposal.action,
+                confidence=proposal.confidence,
+                reason=proposal.reason,
+                message=f"I don't have a registered device called '{proposal.device}'. I can control: {known_names}.",
+                entities={**ir.entities, "context_proposal": proposal.to_dict()},
+            )
+
+        # ── Proposal: unsupported action ──────────────────────────────────
+        if proposal.is_unsupported_action:
+            return Decision(
+                outcome=REJECT,
+                intent=CONTROL_DEVICE,
+                target_device=proposal.device,
+                requested_action=proposal.action,
+                confidence=proposal.confidence,
+                reason=proposal.reason,
+                message=proposal.reason,
+                entities={**ir.entities, "context_proposal": proposal.to_dict()},
+            )
+
+        # ── Proposal: requires clarification ─────────────────────────────
+        if proposal.requires_clarification:
+            prompt = proposal.clarification_prompt or "Could you clarify what you'd like me to do?"
+            candidates = ["fan", "bedroom_light", "living_room_light"]
+            action = proposal.action
+            needed_slot = "device"
+            if proposal.device and proposal.device not in ("lights", "light", "device", None):
+                candidates = [proposal.device]
+                needed_slot = "action"
+
+            self.context.set_pending(
+                session_id,
+                PendingClarification(
+                    interaction_id=None,
+                    question=prompt,
+                    intent=CONTROL_DEVICE,
+                    action=action,
+                    device_id=proposal.device if proposal.device not in ("lights", "light", None) else None,
+                    needed_slot=needed_slot,
+                    candidates=candidates,
+                ),
+            )
+            return Decision(
+                outcome=CLARIFY,
+                intent=CONTROL_DEVICE,
+                target_device=proposal.device,
+                requested_action=proposal.action,
+                confidence=proposal.confidence,
+                reason=proposal.reason,
+                clarification_question=prompt,
+                message=prompt,
+                entities={**ir.entities, "context_proposal": proposal.to_dict()},
+            )
+
+        # ── Proposal: clear action on a known device ─────────────────────
+        # Validate the device exists in the DB before executing
+        device = self.device_service.get_device(proposal.device)
+        if device is None:
+            all_devices = self.device_service.list_devices()
+            known_names = ", ".join(d.name for d in all_devices)
+            return Decision(
+                outcome=REJECT,
+                intent=CONTROL_DEVICE,
+                target_device=proposal.device,
+                requested_action=proposal.action,
+                confidence=proposal.confidence,
+                reason=f"Interpreted device '{proposal.device}' does not exist.",
+                message=f"I couldn't find a device called '{proposal.device}'. I can control: {known_names}.",
+                entities={**ir.entities, "context_proposal": proposal.to_dict()},
+            )
+
+        # Validate action is supported
+        try:
+            supported = json.loads(device.supported_actions)
+        except Exception:
+            supported = ["ON", "OFF"]
+
+        if proposal.action and proposal.action.upper() not in supported:
+            return Decision(
+                outcome=REJECT,
+                intent=CONTROL_DEVICE,
+                target_device=proposal.device,
+                requested_action=proposal.action,
+                confidence=proposal.confidence,
+                reason=f"Action '{proposal.action}' not supported for {device.name}. Supported: {supported}.",
+                message=f"The {device.name} doesn't support '{proposal.action}'. Supported: {', '.join(supported)}.",
+                entities={**ir.entities, "context_proposal": proposal.to_dict()},
+            )
+
+        # Valid context-interpreted command → EXECUTE
+        action_str = proposal.action.upper() if proposal.action else "OFF"
         return Decision(
-            outcome=CLARIFY,
+            outcome=EXECUTE,
             intent=CONTROL_DEVICE,
-            confidence=ir.confidence,
-            reason="General comfort or settings request. Clarification required to identify target device.",
-            clarification_question=prompt,
-            message=prompt,
-            entities=ir.entities,
+            target_device=proposal.device,
+            requested_action=action_str,
+            confidence=proposal.confidence,
+            reason=proposal.reason,
+            message=f"Understood. Turning {action_str} the {device.name}.",
+            entities={**ir.entities, "context_proposal": proposal.to_dict()},
         )
 
     def _handle_unknown(self, ir: IntentResult) -> Decision:

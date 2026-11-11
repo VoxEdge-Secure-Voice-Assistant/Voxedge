@@ -15,7 +15,10 @@ import {
   Cpu,
   Database,
   Radio,
+  LogOut,
+  User,
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 
 const NAV = [
   { to: '/', icon: Home, label: 'Dashboard' },
@@ -28,6 +31,7 @@ const NAV = [
 
 export default function Layout() {
   const [showSettings, setShowSettings] = useState(false);
+  const { user, logout } = useAuth();
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#0a0f1d] text-[#f1f5f9]">
@@ -84,22 +88,50 @@ export default function Layout() {
           </nav>
         </div>
 
-        {/* Bottom Banner Card */}
-        <div className="p-4 m-3 rounded-2xl bg-gradient-to-b from-[#131d31] to-[#0e1626] border border-[#1e2a40] relative overflow-hidden">
-          <div className="flex items-center gap-2 mb-2 text-indigo-400 text-xs font-semibold uppercase tracking-wider">
-            <Radio size={14} className="animate-pulse" /> Live Assist
-          </div>
-          <p className="text-xs font-medium text-slate-200 leading-snug">
-            Smart Assistance for a Safer, Independent Life
-          </p>
-          <div className="w-full bg-[#1b253b] h-1.5 rounded-full mt-3 overflow-hidden">
-            <div className="bg-indigo-500 h-full w-2/3 rounded-full" />
-          </div>
-          <div className="mt-2.5 flex items-center justify-between text-[10px] text-slate-500">
-            <span>v2.0.0 · Phase 2</span>
-            <span className="text-emerald-400 flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" /> Online
-            </span>
+        {/* User & Logout */}
+        <div>
+          {user && (
+            <div className="mx-3 mb-2 p-3 rounded-xl bg-[#0b111e] border border-[#1b263b] flex items-center justify-between">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/30 flex items-center justify-center flex-shrink-0">
+                  <User size={14} className="text-indigo-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-white truncate">
+                    {user.full_name || user.username}
+                  </p>
+                  <p className="text-[10px] text-slate-500 truncate">
+                    @{user.username}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={logout}
+                title="Sign out"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-400/10 transition-colors flex-shrink-0"
+              >
+                <LogOut size={14} />
+              </button>
+            </div>
+          )}
+
+          {/* Bottom Banner Card */}
+          <div className="p-4 m-3 rounded-2xl bg-gradient-to-b from-[#131d31] to-[#0e1626] border border-[#1e2a40] relative overflow-hidden">
+            <div className="flex items-center gap-2 mb-2 text-indigo-400 text-xs font-semibold uppercase tracking-wider">
+              <Radio size={14} className="animate-pulse" /> Live Assist
+            </div>
+            <p className="text-xs font-medium text-slate-200 leading-snug">
+              Smart Assistance for a Safer, Independent Life
+            </p>
+            <div className="w-full bg-[#1b253b] h-1.5 rounded-full mt-3 overflow-hidden">
+              <div className="bg-indigo-500 h-full w-2/3 rounded-full" />
+            </div>
+            <div className="mt-2.5 flex items-center justify-between text-[10px] text-slate-500">
+              <span>v2.0.0 · Phase 2</span>
+              <span className="text-emerald-400 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" /> Online
+              </span>
+            </div>
           </div>
         </div>
       </aside>

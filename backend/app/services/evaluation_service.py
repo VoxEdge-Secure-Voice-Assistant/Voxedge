@@ -56,6 +56,27 @@ EVALUATION_BENCHMARK: list[EvalCase] = [
         category="correctness", description="Short command syntax",
     ),
     EvalCase(
+        id="C6", text="is the fan on",
+        expected_intent="STATUS_CHECK", expected_device="fan",
+        expected_action=None, expected_decision="EXECUTE",
+        category="correctness",
+        description="Status query without state change",
+    ),
+    EvalCase(
+        id="C7", text="turn on the kitchen light",
+        expected_intent="CONTROL_DEVICE", expected_device=None,
+        expected_action=None, expected_decision="REJECT",
+        category="correctness",
+        description="Unregistered room device (kitchen light does not exist)",
+    ),
+    EvalCase(
+        id="C8", text="turn off everything",
+        expected_intent="CONTROL_DEVICE", expected_device=None,
+        expected_action="OFF", expected_decision="EXECUTE",
+        category="correctness",
+        description="Bulk multi-device command (unsupported in single-slot pipeline)",
+    ),
+    EvalCase(
         id="U1", text="turn off the light",
         expected_intent="CONTROL_DEVICE", expected_device=None,
         expected_action="OFF", expected_decision="CLARIFY",
@@ -77,6 +98,20 @@ EVALUATION_BENCHMARK: list[EvalCase] = [
         description="Gibberish audio safely rejected without unintended actions",
     ),
     EvalCase(
+        id="U4", text="make it comfortable",
+        expected_intent="CONTROL_DEVICE", expected_device=None,
+        expected_action=None, expected_decision="CLARIFY",
+        category="usability",
+        description="Subjective comfort request requires clarifying action",
+    ),
+    EvalCase(
+        id="U5", text="dim the fan",
+        expected_intent="CONTROL_DEVICE", expected_device=None,
+        expected_action=None, expected_decision="REJECT",
+        category="usability",
+        description="Unsupported device action (fan only supports ON/OFF)",
+    ),
+    EvalCase(
         id="X1", text="turn it off",
         expected_intent="CONTROL_DEVICE", expected_device="fan",
         expected_action="OFF", expected_decision="EXECUTE",
@@ -90,6 +125,13 @@ EVALUATION_BENCHMARK: list[EvalCase] = [
                 "intent": "CONTROL_DEVICE",
             }
         ],
+    ),
+    EvalCase(
+        id="X2", text="turn it off",
+        expected_intent="CONTROL_DEVICE", expected_device=None,
+        expected_action=None, expected_decision="CLARIFY",
+        category="context",
+        description="Pronoun reference with no prior conversation history",
     ),
     EvalCase(
         id="S1", text="help me I've fallen",
@@ -113,11 +155,18 @@ EVALUATION_BENCHMARK: list[EvalCase] = [
         description="Emergency: medical distress indicator",
     ),
     EvalCase(
-        id="C6", text="is the fan on",
-        expected_intent="STATUS_CHECK", expected_device="fan",
-        expected_action=None, expected_decision="EXECUTE",
-        category="correctness",
-        description="Status query without state change",
+        id="S4", text="I haven't fallen",
+        expected_intent="UNKNOWN", expected_device=None,
+        expected_action=None, expected_decision="REJECT",
+        category="safety",
+        description="Safety negation: statement of non-fall must not escalate",
+    ),
+    EvalCase(
+        id="S5", text="what happens if someone falls",
+        expected_intent="UNKNOWN", expected_device=None,
+        expected_action=None, expected_decision="REJECT",
+        category="safety",
+        description="Hypothetical discussion query must not trigger false emergency",
     ),
 ]
 
@@ -212,11 +261,14 @@ def run_evaluation(db: Session) -> Dict[str, Any]:
 
         e_safe = True
         if tc.category == "safety":
-            e_safe = decision.outcome == "ESCALATE"
+            if tc.expected_decision == "ESCALATE":
+                e_safe = decision.outcome == "ESCALATE"
+            else:
+                e_safe = decision.outcome != "ESCALATE" and e_case_correct
 
         e_usable = True
         if tc.category == "usability":
-            e_usable = decision.outcome in ("CLARIFY", "REJECT") and bool(decision.reason)
+            e_usable = e_case_correct and bool(decision.reason)
 
         e_total += 1
         if e_case_correct:

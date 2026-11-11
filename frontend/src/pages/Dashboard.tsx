@@ -14,23 +14,12 @@ import {
   Lightbulb,
   Fan,
   FileText,
-  BarChart3,
   Send,
   PhoneCall,
   ListOrdered,
   Sliders,
   Sparkles,
 } from 'lucide-react';
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  Tooltip,
-  Legend,
-  CartesianGrid,
-} from 'recharts';
 import {
   getActivity,
   getSystemStatus,
@@ -90,16 +79,22 @@ export default function Dashboard() {
 
   // Fetch initial data
   const loadData = useCallback(() => {
-    Promise.all([getSystemStatus(), listDevices(), getActivity(10)])
-      .then(([s, d, a]) => {
+    getSystemStatus()
+      .then((s) => {
         setStatus(s);
-        setDevices(d.devices);
-        setActivity(a);
         if (s.active_emergencies > 0) {
           setEmergencyAlertActive(true);
         }
       })
-      .catch(() => {});
+      .catch((err) => console.error('Status fetch error:', err));
+
+    listDevices()
+      .then((d) => setDevices(d.devices))
+      .catch((err) => console.error('Devices fetch error:', err));
+
+    getActivity(10)
+      .then((a) => setActivity(a))
+      .catch((err) => console.error('Activity fetch error:', err));
   }, []);
 
   useEffect(() => {
@@ -134,23 +129,25 @@ export default function Dashboard() {
         confidence: res.intent_confidence ?? 0.85,
       });
 
+      const isEmergency = res.decision === 'ESCALATE' || res.intent === 'EMERGENCY';
       setDecisionResult({
         outcome: res.decision,
         title:
-          res.decision === 'EXECUTE'
+          isEmergency
+            ? '🚨 Emergency Assistance Triggered'
+            : res.decision === 'EXECUTE'
             ? 'Valid command. Executing now.'
             : res.decision === 'CLARIFY'
             ? res.clarification_question || 'Clarification needed.'
-            : res.decision === 'ESCALATE'
-            ? 'Emergency assistance triggered.'
             : 'Command safely rejected.',
         reason: res.decision_reason,
-        status: res.decision === 'EXECUTE' ? 'Success' : res.decision,
+        status: isEmergency ? 'Escalated' : res.decision === 'EXECUTE' ? 'Success' : res.decision,
         message: res.message,
         time: nowTime,
       });
 
-      if (res.decision === 'ESCALATE') {
+      if (isEmergency) {
+        setListeningFeedback('🚨 Emergency detected: Notifying emergency contacts.');
         setEmergencyAlertActive(true);
       }
 
@@ -194,25 +191,32 @@ export default function Dashboard() {
           confidence: res.speaker_similarity ?? 0.85,
         });
 
+        const isEmergency = res.decision === 'ESCALATE' || res.intent === 'EMERGENCY';
+
         setDecisionResult({
           outcome: res.decision,
-          title: res.speaker_verified
+          title: isEmergency
+            ? '🚨 Emergency Assistance Triggered'
+            : res.speaker_verified
             ? 'Voice verified. Executing command.'
             : 'Voice verification rejected.',
           reason: res.decision_reason,
-          status: res.speaker_verified ? 'Verified' : 'Access Denied',
+          status: isEmergency
+            ? 'Escalated'
+            : res.speaker_verified
+            ? 'Verified'
+            : 'Access Denied',
           message: res.message,
           time: nowTime,
         });
 
-        if (res.speaker_verified) {
+        if (isEmergency) {
+          setListeningFeedback('🚨 Emergency detected: Notifying emergency contacts.');
+          setEmergencyAlertActive(true);
+        } else if (res.speaker_verified) {
           setListeningFeedback('Voice verified. Processing command.');
         } else {
           setListeningFeedback(res.message);
-        }
-
-        if (res.decision === 'ESCALATE') {
-          setEmergencyAlertActive(true);
         }
 
         loadData();
@@ -254,7 +258,13 @@ export default function Dashboard() {
     try {
       await commandDevice(device.id, newAction);
       loadData();
-    } catch {
+    } catch (err: any) {
+      setListeningFeedback(
+        err?.message?.includes('Authentication required') || err?.message?.includes('401')
+          ? 'Voice authentication required. Use the microphone to verify your voice before controlling devices.'
+          : err?.message || 'Failed to toggle device'
+      );
+      setTimeout(() => setListeningFeedback(null), 4000);
     } finally {
       setDeviceLoading(null);
     }
@@ -272,14 +282,6 @@ export default function Dashboard() {
       setEmergencyFeedback(err.message || 'Failed to dispatch emergency');
     }
   };
-
-  // Evaluation Chart data
-  const evalChartData = [
-    { name: 'Intent Accuracy', baseline: 72, enhanced: 92 },
-    { name: 'Incorrect Action Rate', baseline: 18, enhanced: 4 },
-    { name: 'Clarification Precision', baseline: 60, enhanced: 88 },
-    { name: 'Task Completion', baseline: 76, enhanced: 94 },
-  ];
 
   return (
     <div className="space-y-6 max-w-7xl pb-10">
@@ -839,157 +841,86 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── Bottom Row 2 Columns: Activity Table & Evaluation Chart ───────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* Left Column: Recent Activity (6 cols) */}
-        <div className="lg:col-span-6 bg-[#101828] border border-[#1e2a40] rounded-2xl p-5 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              <FileText size={16} className="text-indigo-400" /> Recent Activity
-            </h2>
-            <Link
-              to="/activity"
-              className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
-            >
-              View All →
-            </Link>
-          </div>
-
-          {/* Activity Table */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="text-slate-400 font-semibold border-b border-[#1b253b] pb-2">
-                <tr>
-                  <th className="pb-2.5 font-medium">Time</th>
-                  <th className="pb-2.5 font-medium">Type</th>
-                  <th className="pb-2.5 font-medium">Command / Event</th>
-                  <th className="pb-2.5 font-medium text-right">Result</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#172033]">
-                {activity && activity.interactions.length > 0 ? (
-                  activity.interactions.slice(0, 5).map((item) => (
-                    <tr key={item.id} className="hover:bg-[#0a0f1d]/50 transition-colors">
-                      <td className="py-2.5 font-mono text-slate-400 text-[11px]">
-                        {new Date(item.created_at).toLocaleTimeString('en-US', {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </td>
-                      <td className="py-2.5">
-                        <span className="flex items-center gap-1 text-slate-300">
-                          {item.input_mode === 'voice' ? (
-                            <Mic size={13} className="text-indigo-400" />
-                          ) : (
-                            <Monitor size={13} className="text-sky-400" />
-                          )}
-                          <span className="capitalize">{item.input_mode}</span>
-                        </span>
-                      </td>
-                      <td className="py-2.5 text-slate-200 font-medium truncate max-w-[180px]">
-                        {item.recognized_text}
-                      </td>
-                      <td className="py-2.5 text-right">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                            item.decision_outcome === 'EXECUTE'
-                              ? 'bg-emerald-500/15 text-emerald-400'
-                              : item.decision_outcome === 'CLARIFY'
-                              ? 'bg-amber-500/15 text-amber-400'
-                              : item.decision_outcome === 'ESCALATE'
-                              ? 'bg-rose-500/15 text-rose-400'
-                              : 'bg-slate-500/15 text-slate-400'
-                          }`}
-                        >
-                          {item.decision_outcome === 'EXECUTE'
-                            ? 'Executed'
-                            : item.decision_outcome === 'CLARIFY'
-                            ? 'Clarified'
-                            : item.decision_outcome === 'ESCALATE'
-                            ? 'Escalated'
-                            : 'Rejected'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={4} className="py-4 text-center text-slate-500">
-                      No recent activities logged yet.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+      {/* ── Bottom Section: Recent Activity ───────── */}
+      <div className="bg-[#101828] border border-[#1e2a40] rounded-2xl p-5 shadow-sm">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+            <FileText size={16} className="text-indigo-400" /> Recent Activity
+          </h2>
+          <Link
+            to="/activity"
+            className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
+          >
+            View All →
+          </Link>
         </div>
 
-        {/* Right Column: Evaluation Results (6 cols) */}
-        <div className="lg:col-span-6 bg-[#101828] border border-[#1e2a40] rounded-2xl p-5 shadow-sm flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-                <BarChart3 size={16} className="text-indigo-400" /> Evaluation Results
-              </h2>
-              <Link
-                to="/evaluation"
-                className="text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1"
-              >
-                View Details →
-              </Link>
-            </div>
-
-            {/* Recharts Bar Chart */}
-            <div className="h-56 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={evalChartData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#1b253b" vertical={false} />
-                  <XAxis
-                    dataKey="name"
-                    stroke="#64748b"
-                    tick={{ fill: '#94a3b8', fontSize: 10 }}
-                    interval={0}
-                  />
-                  <YAxis
-                    stroke="#64748b"
-                    tick={{ fill: '#94a3b8', fontSize: 10 }}
-                    unit="%"
-                    domain={[0, 100]}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: '#0a0f1d',
-                      borderColor: '#232f45',
-                      borderRadius: '0.5rem',
-                      color: '#f8fafc',
-                      fontSize: '11px',
-                    }}
-                  />
-                  <Legend
-                    wrapperStyle={{ fontSize: '11px', paddingTop: '8px' }}
-                    iconSize={10}
-                  />
-                  <Bar
-                    dataKey="baseline"
-                    name="Baseline (Normal)"
-                    fill="#475569"
-                    radius={[4, 4, 0, 0]}
-                  />
-                  <Bar
-                    dataKey="enhanced"
-                    name="VoxEdge (Enhanced)"
-                    fill="#6366f1"
-                    radius={[4, 4, 0, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          <div className="pt-2 text-[11px] text-slate-500 flex items-center justify-between">
-            <span>Phase 1 Baseline vs Phase 2 Decision Engine</span>
-            <span className="text-indigo-400 font-medium">+53.8% Overall Reliability</span>
-          </div>
+        {/* Activity Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="text-slate-400 font-semibold border-b border-[#1b253b] pb-2">
+              <tr>
+                <th className="pb-2.5 font-medium">Time</th>
+                <th className="pb-2.5 font-medium">Type</th>
+                <th className="pb-2.5 font-medium">Command / Event</th>
+                <th className="pb-2.5 font-medium text-right">Result</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#172033]">
+              {activity && activity.interactions.length > 0 ? (
+                activity.interactions.slice(0, 5).map((item) => (
+                  <tr key={item.id} className="hover:bg-[#0a0f1d]/50 transition-colors">
+                    <td className="py-2.5 font-mono text-slate-400 text-[11px]">
+                      {new Date(item.created_at).toLocaleTimeString('en-US', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </td>
+                    <td className="py-2.5">
+                      <span className="flex items-center gap-1 text-slate-300">
+                        {item.input_mode === 'voice' ? (
+                          <Mic size={13} className="text-indigo-400" />
+                        ) : (
+                          <Monitor size={13} className="text-sky-400" />
+                        )}
+                        <span className="capitalize">{item.input_mode}</span>
+                      </span>
+                    </td>
+                    <td className="py-2.5 text-slate-200 font-medium truncate max-w-[280px]">
+                      {item.recognized_text}
+                    </td>
+                    <td className="py-2.5 text-right">
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                          item.decision_outcome === 'EXECUTE'
+                            ? 'bg-emerald-500/15 text-emerald-400'
+                            : item.decision_outcome === 'CLARIFY'
+                            ? 'bg-amber-500/15 text-amber-400'
+                            : item.decision_outcome === 'ESCALATE'
+                            ? 'bg-rose-500/15 text-rose-400'
+                            : 'bg-slate-500/15 text-slate-400'
+                        }`}
+                      >
+                        {item.decision_outcome === 'EXECUTE'
+                          ? 'Executed'
+                          : item.decision_outcome === 'CLARIFY'
+                          ? 'Clarified'
+                          : item.decision_outcome === 'ESCALATE'
+                          ? 'Escalated'
+                          : 'Rejected'}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={4} className="py-4 text-center text-slate-500">
+                    No recent activities logged yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>

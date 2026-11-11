@@ -2,12 +2,16 @@
 
 import type {
   ActivityResponse,
+  AuthTokenResponse,
   ConfirmationRequest,
   Device,
   DeviceListResponse,
   EmergencyEvent,
   EnrollmentStatus,
+  LoginRequest,
+  RegisterRequest,
   SystemStatus,
+  UserProfile,
   VoiceEnrollResponse,
   VoiceProcessRequest,
   VoiceProcessResponse,
@@ -81,7 +85,11 @@ export const enrollVoice = async (
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail || `Enrollment failed with status ${res.status}`);
   }
-  return res.json();
+  const data: VoiceEnrollResponse = await res.json();
+  if (data.auth_token) {
+    setAuthToken(data.auth_token);
+  }
+  return data;
 };
 
 export const processVoiceAudio = async (
@@ -186,3 +194,25 @@ export const updateEmergency = (id: number, status: string, notes?: string) =>
 
 export const getSystemStatus = () =>
   request<SystemStatus>('/system/status');
+
+/* ── Auth ──────────────────────────────────────────────────────────────────── */
+
+export const loginUser = (body: LoginRequest) =>
+  request<AuthTokenResponse>('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const registerUser = (body: RegisterRequest) =>
+  request<AuthTokenResponse>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+export const logoutUser = () =>
+  request<{ success: boolean; message: string }>('/auth/logout', {
+    method: 'POST',
+  });
+
+export const getMe = () =>
+  request<UserProfile>('/auth/me');

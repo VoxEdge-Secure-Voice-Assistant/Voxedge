@@ -35,6 +35,11 @@ class Interaction(Base):
     # Group related interactions (e.g. a command + its clarification response)
     session_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
 
+    # Optional user ownership for multi-user isolation
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True
+    )
+
     # ── Input ──────────────────────────────────────────────────────────────
     # raw_text: what the user typed (text mode) or the original audio transcription
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)

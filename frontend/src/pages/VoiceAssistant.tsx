@@ -197,15 +197,9 @@ export default function VoiceAssistant() {
   };
 
   const startCommandRecording = async () => {
-    if (!enrollmentStatus?.is_enrolled) {
-      setCommandStatusText('Voice profile not enrolled. Please enroll your voice first.');
-      setTimeout(() => setCommandStatusText(''), 4500);
-      return;
-    }
-
     try {
       setCommandRecording(true);
-      setCommandStatusText('Recording... Speak your command (e.g. "Turn on the fan")');
+      setCommandStatusText('Recording... Speak your command (e.g. "Turn on the fan" or "Help me")');
 
       const recorder = new AudioRecorder();
       commandRecorderRef.current = recorder;
@@ -247,7 +241,9 @@ export default function VoiceAssistant() {
       setPendingClarification(resp.decision === 'CLARIFY');
 
       // Feedback display
-      if (resp.speaker_verified) {
+      if (resp.decision === 'ESCALATE' || resp.intent === 'EMERGENCY') {
+        setCommandStatusText('🚨 Emergency assistance triggered! Emergency contacts notified.');
+      } else if (resp.speaker_verified) {
         setCommandStatusText('Voice verified. Processing command.');
       } else {
         setCommandStatusText('Voice not recognized. Command rejected.');

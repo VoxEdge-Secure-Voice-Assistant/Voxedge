@@ -22,6 +22,8 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.services.emergency_detector import EmergencyDetector
+
 if TYPE_CHECKING:
     from app.schemas.voice import StructuredIntent
 
@@ -253,21 +255,29 @@ class IntentService:
     # ── Matchers ──────────────────────────────────────────────────────────
 
     def _check_emergency(self, text: str) -> IntentResult | None:
-        for phrase in EMERGENCY_PHRASES:
-            if phrase in text:
-                return IntentResult(
-                    intent=EMERGENCY,
-                    confidence=1.0,
-                    raw_text=text,
-                    is_ambiguous=False,
-                    requires_clarification=False,
-                    reason=f"Emergency trigger phrase detected: '{phrase}'",
-                    entities={"trigger_phrase": phrase},
-                )
+        detector = EmergencyDetector()
+        res = detector.detect(text)
+        if res.is_emergency:
+            return IntentResult(
+                intent=EMERGENCY,
+                confidence=1.0,
+                raw_text=text,
+                is_ambiguous=False,
+                requires_clarification=res.requires_clarification,
+                clarification_prompt=res.clarification_prompt,
+                reason=res.detection_reason,
+                entities={
+                    "trigger_phrase": res.matched_pattern,
+                    "category": res.category,
+                    "severity": res.severity,
+                    "recommended_response": res.recommended_response,
+                    "emergency_detection": res.to_dict(),
+                },
+            )
         return None
 
     def _check_cancel_confirm(self, text: str) -> IntentResult | None:
-        words = set(text.split())
+        words = set(re.findall(r"\b\w+\b", text.lower()))
         for phrase in CANCEL_WORDS:
             if " " in phrase and phrase in text:
                 return IntentResult(
@@ -402,8 +412,8 @@ class IntentService:
                 },
             )
 
-        # 4. Cold / Chilly → suggests fan OFF
-        if re.search(r"\b(?:i(?:'?m| am)?\s+)?(?:feeling\s+)?(?:too\s+)?cold\b|\b(?:it(?:'?s| is)?\s+)?(?:too\s+)?chilly\b|\bfreezing\b|\bshivering\b", text):
+        # 4. Cold / Chilly / Cool → suggests fan OFF
+        if re.search(r"\b(?:i(?:'?m| am)?\s+)?(?:feeling\s+)?(?:too\s+)?(?:cold|cool)\b|\b(?:it(?:'?s| is)?\s+)?(?:too\s+)?(?:chilly|cool)\b|\bfreezing\b|\bshivering\b", text):
             prompt = "You mentioned you're feeling cold. Would you like me to turn off the fan?"
             return IntentResult(
                 intent=CONTROL_DEVICE,

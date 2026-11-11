@@ -2,6 +2,8 @@
 
 from pydantic import BaseModel, Field
 
+from app.schemas.emergency import EmergencyDetectionResponse
+
 
 class EnrollmentStatusResponse(BaseModel):
     """Voice enrollment status response."""
@@ -19,6 +21,7 @@ class VoiceEnrollResponse(BaseModel):
     message: str
     dimensions: int | None = None
     similarity_threshold: float | None = None
+    auth_token: str | None = None
 
 
 class VoiceProcessRequest(BaseModel):
@@ -101,3 +104,6 @@ class VoiceProcessResponse(BaseModel):
 
     # System message to display
     message: str
+
+    # Emergency detection (populated when emergency detector runs)
+    emergency_detection: EmergencyDetectionResponse | None = None

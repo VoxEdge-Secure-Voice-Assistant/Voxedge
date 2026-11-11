@@ -19,6 +19,7 @@ from app.models.device import Device
 
 # ── Import routers (added as they are implemented) ────────────────────────────
 from app.api import activity as activity_router
+from app.api import auth as auth_router
 from app.api import decisions as decisions_router
 from app.api import devices as devices_router
 from app.api import emergency as emergency_router
@@ -111,6 +112,7 @@ app.add_middleware(
 
 # ── Register routers ─────────────────────────────────────────────────────────
 # Mount directly for internal routes & tests
+app.include_router(auth_router.router)
 app.include_router(voice_router.router)
 app.include_router(devices_router.router)
 app.include_router(decisions_router.router)
@@ -121,6 +123,7 @@ app.include_router(system_router.router)
 
 # Mount also under /api prefix for direct API callers
 api_router_list = [
+    auth_router.router,
     voice_router.router,
     devices_router.router,
     decisions_router.router,

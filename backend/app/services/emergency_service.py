@@ -46,6 +46,7 @@ class EmergencyService:
         trigger_text: str,
         severity: str = "HIGH",
         interaction_id: int | None = None,
+        category: str | None = None,
     ) -> EmergencyEvent:
         """
         Create a new emergency event and simulate contact notification.
@@ -77,13 +78,18 @@ class EmergencyService:
             trigger_text=trigger_text,
             status="ACTIVE",
             severity=severity.upper(),
+            category=category,
             contacts_json=json.dumps(contacts),
             notes="[SIMULATED] Contacts have been notified. No real notification was sent.",
         )
-        self.db.add(event)
-        self.db.commit()
-        self.db.refresh(event)
-        return event
+        try:
+            self.db.add(event)
+            self.db.commit()
+            self.db.refresh(event)
+            return event
+        except Exception as e:
+            self.db.rollback()
+            raise RuntimeError(f"Storage failure: could not record emergency event: {e}") from e
 
     def update_status(
         self,

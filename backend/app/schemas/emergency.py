@@ -35,6 +35,7 @@ class EmergencyEventResponse(BaseModel):
     trigger_text: str
     status: str
     severity: str
+    category: str | None = None
     contacts: list[EmergencyContact]
     notes: str | None
     created_at: datetime
@@ -51,3 +52,18 @@ class EmergencyUpdateRequest(BaseModel):
         ..., description="New status: ACKNOWLEDGED, CANCELLED, COMPLETED"
     )
     notes: str | None = None
+
+
+class EmergencyDetectionResponse(BaseModel):
+    """Structured output from the emergency detector."""
+
+    is_emergency: bool = Field(default=False, description="Whether an emergency was detected")
+    category: str = Field(default="UNKNOWN", description="Emergency category: FALL, BREATHING, PAIN, GENERAL_DISTRESS, CALL_FOR_HELP")
+    severity: str = Field(default="MEDIUM", description="Severity: LOW, MEDIUM, HIGH, CRITICAL")
+    matched_pattern: str = Field(default="", description="The phrase that triggered detection")
+    detection_reason: str = Field(default="", description="Explanation of why this was or was not classified as emergency")
+    recommended_response: str = Field(default="", description="Suggested response message")
+    requires_clarification: bool = Field(default=False, description="Whether the system should ask for confirmation")
+    clarification_prompt: str | None = Field(default=None, description="Clarification question if applicable")
+    is_negated: bool = Field(default=False, description="Whether the emergency phrase was negated")
+    is_hypothetical: bool = Field(default=False, description="Whether the statement was hypothetical/question")

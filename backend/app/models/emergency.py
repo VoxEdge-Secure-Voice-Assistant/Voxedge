@@ -24,6 +24,11 @@ class EmergencyEvent(Base):
         Integer, ForeignKey("interactions.id"), nullable=True
     )
 
+    # Optional user ownership for multi-user isolation
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=True, index=True
+    )
+
     trigger_text: Mapped[str] = mapped_column(Text, nullable=False)
 
     # ACTIVE → ACKNOWLEDGED → COMPLETED  or  ACTIVE → CANCELLED
@@ -34,6 +39,11 @@ class EmergencyEvent(Base):
     severity: Mapped[str] = mapped_column(
         String(16), nullable=False, default="HIGH"
     )  # LOW, MEDIUM, HIGH, CRITICAL
+
+    # Emergency category: FALL, BREATHING, PAIN, GENERAL_DISTRESS, CALL_FOR_HELP, UNKNOWN
+    category: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, default=None
+    )
 
     # JSON list of simulated contacts, e.g. '[{"name": "Dr. Sharma", ...}]'
     contacts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
